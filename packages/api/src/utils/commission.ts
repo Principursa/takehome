@@ -66,3 +66,66 @@ export function validateCommissionSum(
 export function generateId(): string {
 	return crypto.randomUUID();
 }
+
+// Calculate commissions and create distribution breakdown
+export async function calculateCommissions(
+	userId: string,
+	feeAmount: string | Decimal,
+	tokenType: string
+) {
+	const fee = decimal(feeAmount);
+	const breakdown = calculateCommissionBreakdown(fee);
+
+	// Validate the breakdown sums correctly
+	if (!validateCommissionSum(fee, breakdown)) {
+		throw new Error('Commission breakdown does not sum to fee amount');
+	}
+
+	// Get upline chain
+	const upline = await getUplineChain(userId);
+
+	// Map commissions to upline referrers
+	const commissionsList: Array<{
+		id: string;
+		userId: string;
+		level: number;
+		amount: string;
+	}> = [];
+
+	upline.forEach((referrer) => {
+		let amount: Decimal;
+		switch (referrer.level) {
+			case 1:
+				amount = breakdown.level1;
+				break;
+			case 2:
+				amount = breakdown.level2;
+				break;
+			case 3:
+				amount = breakdown.level3;
+				break;
+			default:
+				return; // Skip levels beyond 3
+		}
+
+		commissionsList.push({
+			id: generateId(),
+			userId: referrer.id,
+			level: referrer.level,
+			amount: amount.toFixed(18),
+		});
+	});
+
+	return {
+		commissions: commissionsList,
+		cashback: {
+			id: generateId(),
+			amount: breakdown.cashback.toFixed(18),
+		},
+		treasury: {
+			id: generateId(),
+			amount: breakdown.treasury.toFixed(18),
+		},
+		total: fee.toFixed(18),
+	};
+}
