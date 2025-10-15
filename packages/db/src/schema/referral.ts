@@ -13,3 +13,27 @@ export const trades = pgTable("trades", {
 	processedForCommissions: boolean("processed_for_commissions").default(false).notNull(),
 	createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+// Commissions table - tracks earned commissions by referral level
+export const commissions = pgTable("commissions", {
+	id: text("id").primaryKey(),
+	userId: text("user_id")
+		.notNull()
+		.references(() => user.id, { onDelete: "cascade" }),
+	tradeId: text("trade_id")
+		.notNull()
+		.references(() => trades.id, { onDelete: "cascade" }),
+	amount: numeric("amount", { precision: 28, scale: 18 }).notNull(),
+	level: integer("level").notNull(), // 1, 2, or 3
+	tokenType: text("token_type").notNull(),
+	claimed: boolean("claimed").default(false).notNull(),
+	claimedAt: timestamp("claimed_at"),
+	createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+// XP Balance - cross-chain aggregate view
+export const xpBalance = pgTable("xp_balance", {
+	userId: text("user_id")
+		.primaryKey()
+		.references(() => user.id, { onDelete: "cascade" }),
+	totalXP: numeric("total_xp", { precision: 28, scale: 18 }).default("0").notNull(),
+	lastUpdatedAt: timestamp("last_updated_at").defaultNow().notNull(),
+});
