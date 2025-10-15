@@ -36,13 +36,17 @@
     "db:down": "turbo -F @takehome/db db:down"
   },
   "dependencies": {
+    "decimal.js": "^10.6.0",
     "dotenv": "^17.2.2",
+    "nanoid": "^5.1.6",
+    "node-cache": "^5.1.2",
     "zod": "^4.1.11"
   },
   "devDependencies": {
-    "turbo": "^2.5.4",
+    "@types/bun": "^1.2.6",
+    "@types/node-cache": "^4.2.5",
     "tsdown": "^0.15.5",
-    "@types/bun": "^1.2.6"
+    "turbo": "^2.5.4"
   },
   "packageManager": "bun@1.2.21"
 }
