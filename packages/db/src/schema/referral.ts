@@ -62,3 +62,8 @@ export const xpBalance = pgTable("xp_balance", {
 	totalXP: numeric("total_xp", { precision: 28, scale: 18 }).default("0").notNull(),
 	lastUpdatedAt: timestamp("last_updated_at").defaultNow().notNull(),
 });
+// Processed trades - idempotency tracking
+export const processedTrades = pgTable("processed_trades", {
+	tradeId: text("trade_id").primaryKey(),
+	processedAt: timestamp("processed_at").defaultNow().notNull(),
+});
