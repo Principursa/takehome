@@ -29,6 +29,31 @@ export const commissions = pgTable("commissions", {
 	claimedAt: timestamp("claimed_at"),
 	createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+// Cashback table - trader's own 10% cashback
+export const cashback = pgTable("cashback", {
+	id: text("id").primaryKey(),
+	userId: text("user_id")
+		.notNull()
+		.references(() => user.id, { onDelete: "cascade" }),
+	tradeId: text("trade_id")
+		.notNull()
+		.references(() => trades.id, { onDelete: "cascade" }),
+	amount: numeric("amount", { precision: 28, scale: 18 }).notNull(),
+	tokenType: text("token_type").notNull(),
+	claimed: boolean("claimed").default(false).notNull(),
+	claimedAt: timestamp("claimed_at"),
+	createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+// Treasury allocation - 55% of fees
+export const treasuryAllocation = pgTable("treasury_allocation", {
+	id: text("id").primaryKey(),
+	tradeId: text("trade_id")
+		.notNull()
+		.references(() => trades.id, { onDelete: "cascade" }),
+	amount: numeric("amount", { precision: 28, scale: 18 }).notNull(),
+	tokenType: text("token_type").notNull(),
+	createdAt: timestamp("created_at").defaultNow().notNull(),
+});
 // XP Balance - cross-chain aggregate view
 export const xpBalance = pgTable("xp_balance", {
 	userId: text("user_id")
