@@ -745,4 +745,303 @@ export const referralRouter = router({
 		}),
 
 	// User Story 5: Claiming interface
+
+	// Get claimable earnings (unclaimed commissions and cashback)
+	getClaimable: protectedProcedure
+		.input(
+			z
+				.object({
+					tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]).optional(),
+				})
+				.optional()
+		)
+		.query(async ({ ctx, input }) => {
+			const { commissions, cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			// Get unclaimed commissions
+			const whereConditions = [eq(commissions.userId, userId), eq(commissions.claimed, false)];
+			if (input?.tokenType) {
+				whereConditions.push(eq(commissions.tokenType, input.tokenType));
+			}
+
+			const unclaimedCommissions = await db.query.commissions.findMany({
+				where: and(...whereConditions),
+				columns: {
+					id: true,
+					amount: true,
+					level: true,
+					tokenType: true,
+					createdAt: true,
+				},
+			});
+
+			// Get unclaimed cashback
+			const cashbackWhereConditions = [eq(cashback.userId, userId), eq(cashback.claimed, false)];
+			if (input?.tokenType) {
+				cashbackWhereConditions.push(eq(cashback.tokenType, input.tokenType));
+			}
+
+			const unclaimedCashback = await db.query.cashback.findMany({
+				where: and(...cashbackWhereConditions),
+				columns: {
+					id: true,
+					amount: true,
+					tokenType: true,
+					createdAt: true,
+				},
+			});
+
+			// Calculate totals by token type
+			const byToken: Record<string, { commissions: string; cashback: string; total: string }> = {};
+
+			unclaimedCommissions.forEach((c) => {
+				if (!byToken[c.tokenType]) {
+					byToken[c.tokenType] = { commissions: "0", cashback: "0", total: "0" };
+				}
+				byToken[c.tokenType].commissions = sum(decimal(byToken[c.tokenType].commissions), decimal(c.amount)).toFixed(
+					18
+				);
+			});
+
+			unclaimedCashback.forEach((cb) => {
+				if (!byToken[cb.tokenType]) {
+					byToken[cb.tokenType] = { commissions: "0", cashback: "0", total: "0" };
+				}
+				byToken[cb.tokenType].cashback = sum(decimal(byToken[cb.tokenType].cashback), decimal(cb.amount)).toFixed(18);
+			});
+
+			// Calculate totals
+			Object.keys(byToken).forEach((token) => {
+				byToken[token].total = sum(decimal(byToken[token].commissions), decimal(byToken[token].cashback)).toFixed(18);
+			});
+
+			return {
+				commissions: unclaimedCommissions.map((c) => ({
+					id: c.id,
+					amount: c.amount,
+					level: c.level,
+					tokenType: c.tokenType,
+					createdAt: c.createdAt,
+				})),
+				cashback: unclaimedCashback.map((cb) => ({
+					id: cb.id,
+					amount: cb.amount,
+					tokenType: cb.tokenType,
+					createdAt: cb.createdAt,
+				})),
+				totals: byToken,
+			};
+		}),
+
+	// Claim commissions
+	claimCommissions: protectedProcedure
+		.input(
+			z.object({
+				commissionIds: z.array(z.string()).min(1),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { withSerializableTransaction } = await import("../utils/transaction");
+			const { commissions } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			return await withSerializableTransaction(async (tx) => {
+				// Verify all commissions belong to user and are unclaimed
+				const commissionsToClaimData = await tx.query.commissions.findMany({
+					where: and(eq(commissions.userId, userId), eq(commissions.claimed, false)),
+				});
+
+				const commissionsToClaimMap = new Map(commissionsToClaimData.map((c) => [c.id, c]));
+
+				// Verify all requested IDs are valid
+				const invalidIds = input.commissionIds.filter((id) => !commissionsToClaimMap.has(id));
+				if (invalidIds.length > 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: `Invalid or already claimed commission IDs: ${invalidIds.join(", ")}`,
+					});
+				}
+
+				// Calculate total amount by token type
+				const totalsByToken: Record<string, string> = {};
+				input.commissionIds.forEach((id) => {
+					const commission = commissionsToClaimMap.get(id)!;
+					if (!totalsByToken[commission.tokenType]) {
+						totalsByToken[commission.tokenType] = "0";
+					}
+					totalsByToken[commission.tokenType] = sum(
+						decimal(totalsByToken[commission.tokenType]),
+						decimal(commission.amount)
+					).toFixed(18);
+				});
+
+				// Mark as claimed
+				const now = new Date();
+				for (const id of input.commissionIds) {
+					await tx
+						.update(commissions)
+						.set({
+							claimed: true,
+							claimedAt: now,
+						})
+						.where(eq(commissions.id, id));
+				}
+
+				return {
+					success: true,
+					claimedCount: input.commissionIds.length,
+					totalsByToken,
+				};
+			});
+		}),
+
+	// Claim cashback
+	claimCashback: protectedProcedure
+		.input(
+			z.object({
+				cashbackIds: z.array(z.string()).min(1),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { withSerializableTransaction } = await import("../utils/transaction");
+			const { cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			return await withSerializableTransaction(async (tx) => {
+				// Verify all cashback belong to user and are unclaimed
+				const cashbackToClaimData = await tx.query.cashback.findMany({
+					where: and(eq(cashback.userId, userId), eq(cashback.claimed, false)),
+				});
+
+				const cashbackToClaimMap = new Map(cashbackToClaimData.map((cb) => [cb.id, cb]));
+
+				// Verify all requested IDs are valid
+				const invalidIds = input.cashbackIds.filter((id) => !cashbackToClaimMap.has(id));
+				if (invalidIds.length > 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: `Invalid or already claimed cashback IDs: ${invalidIds.join(", ")}`,
+					});
+				}
+
+				// Calculate total amount by token type
+				const totalsByToken: Record<string, string> = {};
+				input.cashbackIds.forEach((id) => {
+					const cb = cashbackToClaimMap.get(id)!;
+					if (!totalsByToken[cb.tokenType]) {
+						totalsByToken[cb.tokenType] = "0";
+					}
+					totalsByToken[cb.tokenType] = sum(decimal(totalsByToken[cb.tokenType]), decimal(cb.amount)).toFixed(18);
+				});
+
+				// Mark as claimed
+				const now = new Date();
+				for (const id of input.cashbackIds) {
+					await tx
+						.update(cashback)
+						.set({
+							claimed: true,
+							claimedAt: now,
+						})
+						.where(eq(cashback.id, id));
+				}
+
+				return {
+					success: true,
+					claimedCount: input.cashbackIds.length,
+					totalsByToken,
+				};
+			});
+		}),
+
+	// Claim all unclaimed earnings for a specific token type
+	claimAll: protectedProcedure
+		.input(
+			z.object({
+				tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { withSerializableTransaction } = await import("../utils/transaction");
+			const { commissions, cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			return await withSerializableTransaction(async (tx) => {
+				// Get all unclaimed commissions for this token type
+				const unclaimedCommissions = await tx.query.commissions.findMany({
+					where: and(
+						eq(commissions.userId, userId),
+						eq(commissions.claimed, false),
+						eq(commissions.tokenType, input.tokenType)
+					),
+				});
+
+				// Get all unclaimed cashback for this token type
+				const unclaimedCashback = await tx.query.cashback.findMany({
+					where: and(eq(cashback.userId, userId), eq(cashback.claimed, false), eq(cashback.tokenType, input.tokenType)),
+				});
+
+				if (unclaimedCommissions.length === 0 && unclaimedCashback.length === 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "No unclaimed earnings for this token type",
+					});
+				}
+
+				// Calculate totals
+				let totalCommissions = decimal("0");
+				let totalCashback = decimal("0");
+
+				unclaimedCommissions.forEach((c) => {
+					totalCommissions = sum(totalCommissions, decimal(c.amount));
+				});
+
+				unclaimedCashback.forEach((cb) => {
+					totalCashback = sum(totalCashback, decimal(cb.amount));
+				});
+
+				// Mark all as claimed
+				const now = new Date();
+
+				if (unclaimedCommissions.length > 0) {
+					for (const c of unclaimedCommissions) {
+						await tx
+							.update(commissions)
+							.set({
+								claimed: true,
+								claimedAt: now,
+							})
+							.where(eq(commissions.id, c.id));
+					}
+				}
+
+				if (unclaimedCashback.length > 0) {
+					for (const cb of unclaimedCashback) {
+						await tx
+							.update(cashback)
+							.set({
+								claimed: true,
+								claimedAt: now,
+							})
+							.where(eq(cashback.id, cb.id));
+					}
+				}
+
+				return {
+					success: true,
+					claimedCommissions: unclaimedCommissions.length,
+					claimedCashback: unclaimedCashback.length,
+					totals: {
+						commissions: totalCommissions.toFixed(18),
+						cashback: totalCashback.toFixed(18),
+						total: sum(totalCommissions, totalCashback).toFixed(18),
+					},
+				};
+			});
+		}),
 });
