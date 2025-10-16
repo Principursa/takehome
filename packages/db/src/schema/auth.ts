@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, serial, integer, numeric } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, serial, integer, numeric, index } from "drizzle-orm/pg-core";
 
 export const user = pgTable("user", {
 	id: text("id").primaryKey(),
@@ -13,7 +13,10 @@ export const user = pgTable("user", {
 	referrerId: text("referrer_id").references((): any => user.id),
 	referralDepth: integer("referral_depth").default(0).notNull(),
 	feeTier: numeric("fee_tier", { precision: 5, scale: 4 }).default("0.0100").notNull(), // Default 1%
-});
+  //Doesn't have all required fields yet, refer to PDF
+}, (table) => ({
+	referrerIdIdx: index("user_referrer_id_idx").on(table.referrerId),
+}));
 
 export const session = pgTable("session", {
 	id: text("id").primaryKey(),
