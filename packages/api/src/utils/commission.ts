@@ -92,6 +92,9 @@ export async function calculateCommissions(
 		amount: string;
 	}> = [];
 
+	// Track which levels were assigned
+	const assignedLevels = new Set<number>();
+
 	upline.forEach((referrer) => {
 		let amount: Decimal;
 		switch (referrer.level) {
@@ -108,6 +111,7 @@ export async function calculateCommissions(
 				return; // Skip levels beyond 3
 		}
 
+		assignedLevels.add(referrer.level);
 		commissionsList.push({
 			id: generateId(),
 			userId: referrer.id,
@@ -115,6 +119,19 @@ export async function calculateCommissions(
 			amount: amount.toFixed(18),
 		});
 	});
+
+	// Calculate unclaimed commission amounts and add to treasury
+	let treasuryAmount = breakdown.treasury;
+
+	if (!assignedLevels.has(1)) {
+		treasuryAmount = treasuryAmount.plus(breakdown.level1);
+	}
+	if (!assignedLevels.has(2)) {
+		treasuryAmount = treasuryAmount.plus(breakdown.level2);
+	}
+	if (!assignedLevels.has(3)) {
+		treasuryAmount = treasuryAmount.plus(breakdown.level3);
+	}
 
 	return {
 		commissions: commissionsList,
@@ -124,7 +141,7 @@ export async function calculateCommissions(
 		},
 		treasury: {
 			id: generateId(),
-			amount: breakdown.treasury.toFixed(18),
+			amount: treasuryAmount.toFixed(18),
 		},
 		total: fee.toFixed(18),
 	};
