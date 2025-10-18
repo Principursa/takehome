@@ -41,11 +41,12 @@ export function EarningsPanel({
   const totalUnclaimed =
     parseFloat(earnings.unclaimedCommissions) +
     parseFloat(earnings.unclaimedCashback);
+  const totalClaimed = totalEarnings - totalUnclaimed;
 
   return (
     <div className={cn("space-y-4", className)}>
       {/* Summary Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {/* Total Earnings */}
         <Card>
           <CardHeader className="pb-2">
@@ -73,6 +74,22 @@ export function EarningsPanel({
           <CardContent>
             <div className="text-2xl font-bold text-green-600 dark:text-green-400">
               ${formatAmount(totalUnclaimed.toString())}
+            </div>
+            <p className="text-xs text-muted-foreground">{tokenType}</p>
+          </CardContent>
+        </Card>
+
+        {/* Claimed */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription className="flex items-center gap-2">
+              <Wallet className="h-4 w-4" />
+              Already Claimed
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+              ${formatAmount(totalClaimed.toString())}
             </div>
             <p className="text-xs text-muted-foreground">{tokenType}</p>
           </CardContent>
