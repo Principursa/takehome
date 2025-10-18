@@ -12,17 +12,29 @@ import {
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
-interface ClaimableBalance {
-  tokenType: string;
-  commissions: string;
-  cashback: string;
-  total: string;
-  commissionCount: number;
-  cashbackCount: number;
+interface ClaimableData {
+  commissions: Array<{
+    id: string;
+    amount: string;
+    level: number;
+    tokenType: string;
+    createdAt: Date;
+  }>;
+  cashback: Array<{
+    id: string;
+    amount: string;
+    tokenType: string;
+    createdAt: Date;
+  }>;
+  totals: Record<string, {
+    commissions: string;
+    cashback: string;
+    total: string;
+  }>;
 }
 
 interface ClaimButtonProps {
-  claimable: ClaimableBalance[];
+  claimable: ClaimableData;
   onClaim: (tokenType: string) => Promise<void>;
   className?: string;
 }
@@ -51,7 +63,28 @@ export function ClaimButton({
     }
   };
 
-  const hasClaimable = claimable.some((c) => parseFloat(c.total) > 0);
+  // Convert totals object to array for rendering
+  const claimableBalances = Object.entries(claimable.totals || {}).map(
+    ([tokenType, amounts]) => {
+      const commissionCount = claimable.commissions.filter(
+        (c) => c.tokenType === tokenType
+      ).length;
+      const cashbackCount = claimable.cashback.filter(
+        (cb) => cb.tokenType === tokenType
+      ).length;
+
+      return {
+        tokenType,
+        commissions: amounts.commissions,
+        cashback: amounts.cashback,
+        total: amounts.total,
+        commissionCount,
+        cashbackCount,
+      };
+    }
+  );
+
+  const hasClaimable = claimableBalances.some((c) => parseFloat(c.total) > 0);
 
   if (!hasClaimable) {
     return (
@@ -83,7 +116,7 @@ export function ClaimButton({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {claimable
+        {claimableBalances
           .filter((c) => parseFloat(c.total) > 0)
           .map((balance) => (
             <div
