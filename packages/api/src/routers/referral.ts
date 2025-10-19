@@ -1,0 +1,1022 @@
+import { router, protectedProcedure, publicProcedure } from "../index";
+import { z } from "zod";
+import { db, user } from "@takehome/db";
+import { eq, sql, and } from "drizzle-orm";
+import { generateReferralCode, normalizeReferralCode, isValidReferralCodeFormat } from "../utils/referral-code";
+import { TRPCError } from "@trpc/server";
+
+export const referralRouter = router({
+	// User Story 1: Code generation and registration
+
+	// T023: Generate unique referral code for authenticated user
+	generate: protectedProcedure.mutation(async ({ ctx }) => {
+		const userId = ctx.session.user.id;
+
+		// Check if user already has a referral code (idempotency)
+		const existingUser = await db.query.user.findFirst({
+			where: eq(user.id, userId),
+			columns: {
+				referralCode: true,
+			},
+		});
+
+		if (existingUser?.referralCode) {
+			return {
+				code: existingUser.referralCode,
+				alreadyExists: true,
+			};
+		}
+
+		// Generate unique code with retry logic
+		let attempts = 0;
+		const maxAttempts = 10;
+
+		while (attempts < maxAttempts) {
+			const code = generateReferralCode();
+
+			try {
+				// Attempt to update user with unique code
+				await db
+					.update(user)
+					.set({
+						referralCode: code,
+						updatedAt: new Date(),
+					})
+					.where(and(eq(user.id, userId), sql`${user.referralCode} IS NULL`));
+
+				// Verify the update succeeded
+				const updatedUser = await db.query.user.findFirst({
+					where: eq(user.id, userId),
+					columns: {
+						referralCode: true,
+					},
+				});
+
+				if (updatedUser?.referralCode === code) {
+					return {
+						code,
+						alreadyExists: false,
+					};
+				}
+
+				// If code is different, another process might have set it
+				if (updatedUser?.referralCode) {
+					return {
+						code: updatedUser.referralCode,
+						alreadyExists: true,
+					};
+				}
+			} catch (error: any) {
+				// Handle unique constraint violation
+				if (error.code === '23505') {
+					attempts++;
+					continue;
+				}
+				throw error;
+			}
+
+			attempts++;
+		}
+
+		throw new TRPCError({
+			code: "INTERNAL_SERVER_ERROR",
+			message: "Failed to generate unique referral code after multiple attempts",
+		});
+	}),
+
+	// T024: Get authenticated user's referral code and stats
+	getMyCode: protectedProcedure.query(async ({ ctx }) => {
+		const userId = ctx.session.user.id;
+
+		const userData = await db.query.user.findFirst({
+			where: eq(user.id, userId),
+			columns: {
+				referralCode: true,
+			},
+		});
+
+		if (!userData?.referralCode) {
+			return {
+				code: null,
+				referralCount: 0,
+				shareUrl: null,
+			};
+		}
+
+		// Count direct referrals
+		const referralCountResult = await db.execute<{ count: string }>(
+			sql`SELECT COUNT(*) as count FROM "user" WHERE referrer_id = ${userId}`
+		);
+		const referralCount = parseInt(referralCountResult.rows[0]?.count || "0", 10);
+
+		// Generate share URL (frontend will handle the full URL)
+		const shareUrl = `/register?ref=${userData.referralCode}`;
+
+		return {
+			code: userData.referralCode,
+			referralCount,
+			shareUrl,
+		};
+	}),
+
+	// T025: Validate referral code (public endpoint for registration)
+	validateCode: publicProcedure
+		.input(
+			z.object({
+				code: z.string().min(1).max(20),
+			})
+		)
+		.query(async ({ input }) => {
+			const normalizedCode = normalizeReferralCode(input.code);
+
+			// Validate format
+			if (!isValidReferralCodeFormat(normalizedCode)) {
+				return {
+					valid: false,
+					error: "Invalid referral code format",
+				};
+			}
+
+			// Check if code exists
+			const referrer = await db.query.user.findFirst({
+				where: eq(user.referralCode, normalizedCode),
+				columns: {
+					id: true,
+					name: true,
+					referralDepth: true,
+				},
+			});
+
+			if (!referrer) {
+				return {
+					valid: false,
+					error: "Referral code not found",
+				};
+			}
+
+			// Check if referrer is at max depth (level 3)
+			if (referrer.referralDepth >= 3) {
+				return {
+					valid: false,
+					error: "Referral code is at maximum depth",
+				};
+			}
+
+			return {
+				valid: true,
+				referrer: {
+					id: referrer.id,
+					name: referrer.name,
+				},
+			};
+		}),
+
+	// T026: Register user with referral code
+	register: protectedProcedure
+		.input(
+			z.object({
+				referralCode: z.string().min(1).max(20),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const userId = ctx.session.user.id;
+			const normalizedCode = normalizeReferralCode(input.referralCode);
+
+			// Get current user
+			const currentUser = await db.query.user.findFirst({
+				where: eq(user.id, userId),
+				columns: {
+					id: true,
+					referrerId: true,
+					referralCode: true,
+				},
+			});
+
+			if (!currentUser) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "User not found",
+				});
+			}
+
+			// Check if user already has a referrer
+			if (currentUser.referrerId) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "User already has a referrer",
+				});
+			}
+
+			// Validate referral code format
+			if (!isValidReferralCodeFormat(normalizedCode)) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Invalid referral code format",
+				});
+			}
+
+			// Find referrer
+			const referrer = await db.query.user.findFirst({
+				where: eq(user.referralCode, normalizedCode),
+				columns: {
+					id: true,
+					name: true,
+					referralDepth: true,
+				},
+			});
+
+			if (!referrer) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Referral code not found",
+				});
+			}
+
+			// Prevent self-referral
+			if (referrer.id === userId) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Cannot use your own referral code",
+				});
+			}
+
+			// Check max depth
+			if (referrer.referralDepth >= 3) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Referral code is at maximum depth",
+				});
+			}
+
+			// Prevent circular references - check if referrer is in user's downline
+			if (currentUser.referralCode) {
+				const circularCheck = await db.execute<{ id: string }>(sql`
+					WITH RECURSIVE downline AS (
+						SELECT id, referrer_id
+						FROM "user"
+						WHERE id = ${userId}
+						UNION ALL
+						SELECT u.id, u.referrer_id
+						FROM "user" u
+						INNER JOIN downline d ON u.referrer_id = d.id
+					)
+					SELECT id FROM downline WHERE id = ${referrer.id}
+				`);
+
+				if (circularCheck.rows.length > 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Cannot create circular referral relationship",
+					});
+				}
+			}
+
+			// Update user with referrer
+			await db
+				.update(user)
+				.set({
+					referrerId: referrer.id,
+					referralDepth: referrer.referralDepth + 1,
+					updatedAt: new Date(),
+				})
+				.where(eq(user.id, userId));
+
+			return {
+				success: true,
+				referrer: {
+					id: referrer.id,
+					name: referrer.name,
+				},
+			};
+		}),
+
+	// User Story 2: Commission earning
+	// Note: Trade recording moved to /api/webhook/trade (see webhook router)
+
+	// GET /api/referral/trades - Get trades with commission breakdown
+	trades: protectedProcedure
+		.input(
+			z.object({
+				limit: z.number().min(1).max(100).default(50),
+				offset: z.number().min(0).default(0),
+			})
+		)
+		.query(async ({ ctx, input }) => {
+			const { trades, commissions, cashback, treasuryAllocation } = await import("@takehome/db");
+			const userId = ctx.session.user.id;
+
+			// Get user's trades
+			const userTrades = await db.query.trades.findMany({
+				where: eq(trades.userId, userId),
+				limit: input.limit,
+				offset: input.offset,
+				orderBy: (trades, { desc }) => [desc(trades.createdAt)],
+			});
+
+			// For each trade, get commissions, cashback, and treasury
+			const tradesWithDetails = await Promise.all(
+				userTrades.map(async (trade) => {
+					// Get commissions for this trade with user info
+					const tradeCommissions = await db.query.commissions.findMany({
+						where: eq(commissions.tradeId, trade.id),
+						with: {
+							user: {
+								columns: {
+									id: true,
+									name: true,
+									email: true,
+								},
+							},
+						},
+					});
+
+					// Get cashback for this trade
+					const tradeCashback = await db.query.cashback.findFirst({
+						where: eq(cashback.tradeId, trade.id),
+					});
+
+					// Get treasury allocation for this trade
+					const tradeTreasury = await db.query.treasuryAllocation.findFirst({
+						where: eq(treasuryAllocation.tradeId, trade.id),
+					});
+
+					return {
+						id: trade.id,
+						volume: trade.volume,
+						feeAmount: trade.feeAmount,
+						feeTier: trade.feeTier,
+						tokenType: trade.tokenType,
+						createdAt: trade.createdAt,
+						processedForCommissions: trade.processedForCommissions,
+						commissions: tradeCommissions.map((c) => ({
+							id: c.id,
+							amount: c.amount,
+							level: c.level,
+							userId: c.userId,
+							claimed: c.claimed,
+							claimedAt: c.claimedAt,
+							user: c.user
+								? {
+										name: c.user.name,
+										email: c.user.email,
+								  }
+								: undefined,
+						})),
+						cashback: tradeCashback
+							? {
+									id: tradeCashback.id,
+									amount: tradeCashback.amount,
+									claimed: tradeCashback.claimed,
+									claimedAt: tradeCashback.claimedAt,
+							  }
+							: null,
+						treasury: tradeTreasury
+							? {
+									amount: tradeTreasury.amount,
+							  }
+							: { amount: "0" },
+					};
+				})
+			);
+
+			return {
+				trades: tradesWithDetails,
+				hasMore: userTrades.length === input.limit,
+			};
+		}),
+
+	// User Story 3: Network viewing
+
+	// GET /api/referral/network - Get user's referral network (direct referrals and stats)
+	network: protectedProcedure.query(async ({ ctx }) => {
+		const userId = ctx.session.user.id;
+
+		// Get direct referrals
+		const directReferrals = await db.query.user.findMany({
+			where: eq(user.referrerId, userId),
+			columns: {
+				id: true,
+				name: true,
+				email: true,
+				createdAt: true,
+				referralDepth: true,
+			},
+		});
+
+		// Get count of indirect referrals (Level 2)
+		const level2Count = await db.execute<{ count: string }>(sql`
+			SELECT COUNT(*) as count
+			FROM "user" u
+			WHERE u.referrer_id IN (
+				SELECT id FROM "user" WHERE referrer_id = ${userId}
+			)
+		`);
+
+		// Get count of Level 3 referrals
+		const level3Count = await db.execute<{ count: string }>(sql`
+			SELECT COUNT(*) as count
+			FROM "user" u
+			WHERE u.referrer_id IN (
+				SELECT id FROM "user" u2
+				WHERE u2.referrer_id IN (
+					SELECT id FROM "user" WHERE referrer_id = ${userId}
+				)
+			)
+		`);
+
+		return {
+			direct: directReferrals.map((r) => ({
+				id: r.id,
+				name: r.name,
+				email: r.email,
+				joinedAt: r.createdAt,
+				depth: r.referralDepth,
+			})),
+			stats: {
+				level1Count: directReferrals.length,
+				level2Count: parseInt(level2Count.rows[0]?.count || "0", 10),
+				level3Count: parseInt(level3Count.rows[0]?.count || "0", 10),
+				totalNetwork:
+					directReferrals.length +
+					parseInt(level2Count.rows[0]?.count || "0", 10) +
+					parseInt(level3Count.rows[0]?.count || "0", 10),
+			},
+		};
+	}),
+
+	// Get detailed downline tree (recursive query)
+	getDownlineTree: protectedProcedure.query(async ({ ctx }) => {
+		const userId = ctx.session.user.id;
+
+		const downlineResult = await db.execute<{
+			id: string;
+			name: string;
+			email: string;
+			referrer_id: string;
+			referral_depth: number;
+			created_at: string;
+		}>(sql`
+			WITH RECURSIVE downline AS (
+				SELECT id, name, email, referrer_id, referral_depth, created_at, 1 as level
+				FROM "user"
+				WHERE referrer_id = ${userId}
+
+				UNION ALL
+
+				SELECT u.id, u.name, u.email, u.referrer_id, u.referral_depth, u.created_at, d.level + 1
+				FROM "user" u
+				INNER JOIN downline d ON u.referrer_id = d.id
+				WHERE d.level < 3
+			)
+			SELECT id, name, email, referrer_id, referral_depth, created_at
+			FROM downline
+			ORDER BY referral_depth, created_at
+		`);
+
+		return downlineResult.rows.map((row) => ({
+			id: row.id,
+			name: row.name,
+			email: row.email,
+			referrerId: row.referrer_id,
+			depth: row.referral_depth,
+			joinedAt: row.created_at,
+		}));
+	}),
+
+	// User Story 4: Earnings dashboard
+
+	// GET /api/referral/earnings - Get earnings summary for authenticated user
+	earnings: protectedProcedure
+		.input(
+			z
+				.object({
+					tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]).optional(),
+				})
+				.optional()
+		)
+		.query(async ({ ctx, input }) => {
+			const { commissions, cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			// Build where clause
+			const whereConditions = [eq(commissions.userId, userId)];
+			if (input?.tokenType) {
+				whereConditions.push(eq(commissions.tokenType, input.tokenType));
+			}
+
+			// Get all commissions
+			const userCommissions = await db.query.commissions.findMany({
+				where: and(...whereConditions),
+				columns: {
+					id: true,
+					amount: true,
+					level: true,
+					tokenType: true,
+					claimed: true,
+					claimedAt: true,
+					createdAt: true,
+				},
+			});
+
+			// Get cashback
+			const cashbackWhereConditions = [eq(cashback.userId, userId)];
+			if (input?.tokenType) {
+				cashbackWhereConditions.push(eq(cashback.tokenType, input.tokenType));
+			}
+
+			const userCashback = await db.query.cashback.findMany({
+				where: and(...cashbackWhereConditions),
+				columns: {
+					id: true,
+					amount: true,
+					tokenType: true,
+					claimed: true,
+					claimedAt: true,
+					createdAt: true,
+				},
+			});
+
+			// Calculate totals by token type and claim status
+			const earnings = {
+				commissions: {
+					total: "0",
+					claimed: "0",
+					unclaimed: "0",
+					byLevel: {
+						level1: { total: "0", claimed: "0", unclaimed: "0" },
+						level2: { total: "0", claimed: "0", unclaimed: "0" },
+						level3: { total: "0", claimed: "0", unclaimed: "0" },
+					},
+					byToken: {} as Record<string, { total: string; claimed: string; unclaimed: string }>,
+				},
+				cashback: {
+					total: "0",
+					claimed: "0",
+					unclaimed: "0",
+					byToken: {} as Record<string, { total: string; claimed: string; unclaimed: string }>,
+				},
+			};
+
+			// Process commissions
+			userCommissions.forEach((c) => {
+				const amount = decimal(c.amount);
+				earnings.commissions.total = sum(decimal(earnings.commissions.total), amount).toFixed(18);
+
+				if (c.claimed) {
+					earnings.commissions.claimed = sum(decimal(earnings.commissions.claimed), amount).toFixed(18);
+				} else {
+					earnings.commissions.unclaimed = sum(decimal(earnings.commissions.unclaimed), amount).toFixed(18);
+				}
+
+				// By level
+				const levelKey = `level${c.level}` as keyof typeof earnings.commissions.byLevel;
+				const levelStats = earnings.commissions.byLevel[levelKey];
+				levelStats.total = sum(decimal(levelStats.total), amount).toFixed(18);
+				if (c.claimed) {
+					levelStats.claimed = sum(decimal(levelStats.claimed), amount).toFixed(18);
+				} else {
+					levelStats.unclaimed = sum(decimal(levelStats.unclaimed), amount).toFixed(18);
+				}
+
+				// By token
+				if (!earnings.commissions.byToken[c.tokenType]) {
+					earnings.commissions.byToken[c.tokenType] = {
+						total: "0",
+						claimed: "0",
+						unclaimed: "0",
+					};
+				}
+				const tokenStats = earnings.commissions.byToken[c.tokenType];
+				tokenStats.total = sum(decimal(tokenStats.total), amount).toFixed(18);
+				if (c.claimed) {
+					tokenStats.claimed = sum(decimal(tokenStats.claimed), amount).toFixed(18);
+				} else {
+					tokenStats.unclaimed = sum(decimal(tokenStats.unclaimed), amount).toFixed(18);
+				}
+			});
+
+			// Process cashback
+			userCashback.forEach((cb) => {
+				const amount = decimal(cb.amount);
+				earnings.cashback.total = sum(decimal(earnings.cashback.total), amount).toFixed(18);
+
+				if (cb.claimed) {
+					earnings.cashback.claimed = sum(decimal(earnings.cashback.claimed), amount).toFixed(18);
+				} else {
+					earnings.cashback.unclaimed = sum(decimal(earnings.cashback.unclaimed), amount).toFixed(18);
+				}
+
+				// By token
+				if (!earnings.cashback.byToken[cb.tokenType]) {
+					earnings.cashback.byToken[cb.tokenType] = {
+						total: "0",
+						claimed: "0",
+						unclaimed: "0",
+					};
+				}
+				const tokenStats = earnings.cashback.byToken[cb.tokenType];
+				tokenStats.total = sum(decimal(tokenStats.total), amount).toFixed(18);
+				if (cb.claimed) {
+					tokenStats.claimed = sum(decimal(tokenStats.claimed), amount).toFixed(18);
+				} else {
+					tokenStats.unclaimed = sum(decimal(tokenStats.unclaimed), amount).toFixed(18);
+				}
+			});
+
+			return earnings;
+		}),
+
+	// GET /api/referral/earnings/history - Get earnings history with pagination
+	earningsHistory: protectedProcedure
+		.input(
+			z.object({
+				limit: z.number().min(1).max(100).default(50),
+				offset: z.number().min(0).default(0),
+				tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]).optional(),
+				type: z.enum(["commission", "cashback", "all"]).default("all"),
+			})
+		)
+		.query(async ({ ctx, input }) => {
+			const { commissions, cashback, trades } = await import("@takehome/db");
+			const userId = ctx.session.user.id;
+
+			const history: Array<{
+				id: string;
+				type: "commission" | "cashback";
+				amount: string;
+				tokenType: string;
+				claimed: boolean;
+				claimedAt: Date | null;
+				createdAt: Date;
+				level?: number;
+				tradeId?: string;
+			}> = [];
+
+			// Fetch commissions
+			if (input.type === "commission" || input.type === "all") {
+				const whereConditions = [eq(commissions.userId, userId)];
+				if (input.tokenType) {
+					whereConditions.push(eq(commissions.tokenType, input.tokenType));
+				}
+
+				const userCommissions = await db.query.commissions.findMany({
+					where: and(...whereConditions),
+					limit: input.limit,
+					offset: input.offset,
+					orderBy: (commissions, { desc }) => [desc(commissions.createdAt)],
+				});
+
+				history.push(
+					...userCommissions.map((c) => ({
+						id: c.id,
+						type: "commission" as const,
+						amount: c.amount,
+						tokenType: c.tokenType,
+						claimed: c.claimed,
+						claimedAt: c.claimedAt,
+						createdAt: c.createdAt,
+						level: c.level,
+						tradeId: c.tradeId,
+					}))
+				);
+			}
+
+			// Fetch cashback
+			if (input.type === "cashback" || input.type === "all") {
+				const whereConditions = [eq(cashback.userId, userId)];
+				if (input.tokenType) {
+					whereConditions.push(eq(cashback.tokenType, input.tokenType));
+				}
+
+				const userCashback = await db.query.cashback.findMany({
+					where: and(...whereConditions),
+					limit: input.limit,
+					offset: input.offset,
+					orderBy: (cashback, { desc }) => [desc(cashback.createdAt)],
+				});
+
+				history.push(
+					...userCashback.map((cb) => ({
+						id: cb.id,
+						type: "cashback" as const,
+						amount: cb.amount,
+						tokenType: cb.tokenType,
+						claimed: cb.claimed,
+						claimedAt: cb.claimedAt,
+						createdAt: cb.createdAt,
+						tradeId: cb.tradeId,
+					}))
+				);
+			}
+
+			// Sort by createdAt desc
+			history.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+			return {
+				items: history.slice(0, input.limit),
+				hasMore: history.length > input.limit,
+			};
+		}),
+
+	// User Story 5: Claiming interface
+
+	// GET /api/referral/claimable - Get claimable earnings (unclaimed commissions and cashback)
+	getClaimable: protectedProcedure
+		.input(
+			z
+				.object({
+					tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]).optional(),
+				})
+				.optional()
+		)
+		.query(async ({ ctx, input }) => {
+			const { commissions, cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			// Get unclaimed commissions
+			const whereConditions = [eq(commissions.userId, userId), eq(commissions.claimed, false)];
+			if (input?.tokenType) {
+				whereConditions.push(eq(commissions.tokenType, input.tokenType));
+			}
+
+			const unclaimedCommissions = await db.query.commissions.findMany({
+				where: and(...whereConditions),
+				columns: {
+					id: true,
+					amount: true,
+					level: true,
+					tokenType: true,
+					createdAt: true,
+				},
+			});
+
+			// Get unclaimed cashback
+			const cashbackWhereConditions = [eq(cashback.userId, userId), eq(cashback.claimed, false)];
+			if (input?.tokenType) {
+				cashbackWhereConditions.push(eq(cashback.tokenType, input.tokenType));
+			}
+
+			const unclaimedCashback = await db.query.cashback.findMany({
+				where: and(...cashbackWhereConditions),
+				columns: {
+					id: true,
+					amount: true,
+					tokenType: true,
+					createdAt: true,
+				},
+			});
+
+			// Calculate totals by token type
+			const byToken: Record<string, { commissions: string; cashback: string; total: string }> = {};
+
+			unclaimedCommissions.forEach((c) => {
+				if (!byToken[c.tokenType]) {
+					byToken[c.tokenType] = { commissions: "0", cashback: "0", total: "0" };
+				}
+				byToken[c.tokenType].commissions = sum(decimal(byToken[c.tokenType].commissions), decimal(c.amount)).toFixed(
+					18
+				);
+			});
+
+			unclaimedCashback.forEach((cb) => {
+				if (!byToken[cb.tokenType]) {
+					byToken[cb.tokenType] = { commissions: "0", cashback: "0", total: "0" };
+				}
+				byToken[cb.tokenType].cashback = sum(decimal(byToken[cb.tokenType].cashback), decimal(cb.amount)).toFixed(18);
+			});
+
+			// Calculate totals
+			Object.keys(byToken).forEach((token) => {
+				byToken[token].total = sum(decimal(byToken[token].commissions), decimal(byToken[token].cashback)).toFixed(18);
+			});
+
+			return {
+				commissions: unclaimedCommissions.map((c) => ({
+					id: c.id,
+					amount: c.amount,
+					level: c.level,
+					tokenType: c.tokenType,
+					createdAt: c.createdAt,
+				})),
+				cashback: unclaimedCashback.map((cb) => ({
+					id: cb.id,
+					amount: cb.amount,
+					tokenType: cb.tokenType,
+					createdAt: cb.createdAt,
+				})),
+				totals: byToken,
+			};
+		}),
+
+	// POST /api/referral/claim - Claim commissions (individual IDs)
+	claimCommissions: protectedProcedure
+		.input(
+			z.object({
+				commissionIds: z.array(z.string()).min(1),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { withSerializableTransaction } = await import("../utils/transaction");
+			const { commissions } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			return await withSerializableTransaction(async (tx) => {
+				// Verify all commissions belong to user and are unclaimed
+				const commissionsToClaimData = await tx.query.commissions.findMany({
+					where: and(eq(commissions.userId, userId), eq(commissions.claimed, false)),
+				});
+
+				const commissionsToClaimMap = new Map(commissionsToClaimData.map((c) => [c.id, c]));
+
+				// Verify all requested IDs are valid
+				const invalidIds = input.commissionIds.filter((id) => !commissionsToClaimMap.has(id));
+				if (invalidIds.length > 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: `Invalid or already claimed commission IDs: ${invalidIds.join(", ")}`,
+					});
+				}
+
+				// Calculate total amount by token type
+				const totalsByToken: Record<string, string> = {};
+				input.commissionIds.forEach((id) => {
+					const commission = commissionsToClaimMap.get(id)!;
+					if (!totalsByToken[commission.tokenType]) {
+						totalsByToken[commission.tokenType] = "0";
+					}
+					totalsByToken[commission.tokenType] = sum(
+						decimal(totalsByToken[commission.tokenType]),
+						decimal(commission.amount)
+					).toFixed(18);
+				});
+
+				// Mark as claimed
+				const now = new Date();
+				for (const id of input.commissionIds) {
+					await tx
+						.update(commissions)
+						.set({
+							claimed: true,
+							claimedAt: now,
+						})
+						.where(eq(commissions.id, id));
+				}
+
+				return {
+					success: true,
+					claimedCount: input.commissionIds.length,
+					totalsByToken,
+				};
+			});
+		}),
+
+	// Claim cashback
+	claimCashback: protectedProcedure
+		.input(
+			z.object({
+				cashbackIds: z.array(z.string()).min(1),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { withSerializableTransaction } = await import("../utils/transaction");
+			const { cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			return await withSerializableTransaction(async (tx) => {
+				// Verify all cashback belong to user and are unclaimed
+				const cashbackToClaimData = await tx.query.cashback.findMany({
+					where: and(eq(cashback.userId, userId), eq(cashback.claimed, false)),
+				});
+
+				const cashbackToClaimMap = new Map(cashbackToClaimData.map((cb) => [cb.id, cb]));
+
+				// Verify all requested IDs are valid
+				const invalidIds = input.cashbackIds.filter((id) => !cashbackToClaimMap.has(id));
+				if (invalidIds.length > 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: `Invalid or already claimed cashback IDs: ${invalidIds.join(", ")}`,
+					});
+				}
+
+				// Calculate total amount by token type
+				const totalsByToken: Record<string, string> = {};
+				input.cashbackIds.forEach((id) => {
+					const cb = cashbackToClaimMap.get(id)!;
+					if (!totalsByToken[cb.tokenType]) {
+						totalsByToken[cb.tokenType] = "0";
+					}
+					totalsByToken[cb.tokenType] = sum(decimal(totalsByToken[cb.tokenType]), decimal(cb.amount)).toFixed(18);
+				});
+
+				// Mark as claimed
+				const now = new Date();
+				for (const id of input.cashbackIds) {
+					await tx
+						.update(cashback)
+						.set({
+							claimed: true,
+							claimedAt: now,
+						})
+						.where(eq(cashback.id, id));
+				}
+
+				return {
+					success: true,
+					claimedCount: input.cashbackIds.length,
+					totalsByToken,
+				};
+			});
+		}),
+
+	// POST /api/referral/claim - Claim all unclaimed earnings for a specific token type
+	claim: protectedProcedure
+		.input(
+			z.object({
+				tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]),
+			})
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { withSerializableTransaction } = await import("../utils/transaction");
+			const { commissions, cashback } = await import("@takehome/db");
+			const { decimal, sum } = await import("../utils/decimal");
+			const userId = ctx.session.user.id;
+
+			return await withSerializableTransaction(async (tx) => {
+				// Get all unclaimed commissions for this token type
+				const unclaimedCommissions = await tx.query.commissions.findMany({
+					where: and(
+						eq(commissions.userId, userId),
+						eq(commissions.claimed, false),
+						eq(commissions.tokenType, input.tokenType)
+					),
+				});
+
+				// Get all unclaimed cashback for this token type
+				const unclaimedCashback = await tx.query.cashback.findMany({
+					where: and(eq(cashback.userId, userId), eq(cashback.claimed, false), eq(cashback.tokenType, input.tokenType)),
+				});
+
+				if (unclaimedCommissions.length === 0 && unclaimedCashback.length === 0) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "No unclaimed earnings for this token type",
+					});
+				}
+
+				// Calculate totals
+				let totalCommissions = decimal("0");
+				let totalCashback = decimal("0");
+
+				unclaimedCommissions.forEach((c) => {
+					totalCommissions = sum(totalCommissions, decimal(c.amount));
+				});
+
+				unclaimedCashback.forEach((cb) => {
+					totalCashback = sum(totalCashback, decimal(cb.amount));
+				});
+
+				// Mark all as claimed
+				const now = new Date();
+
+				if (unclaimedCommissions.length > 0) {
+					for (const c of unclaimedCommissions) {
+						await tx
+							.update(commissions)
+							.set({
+								claimed: true,
+								claimedAt: now,
+							})
+							.where(eq(commissions.id, c.id));
+					}
+				}
+
+				if (unclaimedCashback.length > 0) {
+					for (const cb of unclaimedCashback) {
+						await tx
+							.update(cashback)
+							.set({
+								claimed: true,
+								claimedAt: now,
+							})
+							.where(eq(cashback.id, cb.id));
+					}
+				}
+
+				return {
+					success: true,
+					claimedCommissions: unclaimedCommissions.length,
+					claimedCashback: unclaimedCashback.length,
+					totals: {
+						commissions: totalCommissions.toFixed(18),
+						cashback: totalCashback.toFixed(18),
+						total: sum(totalCommissions, totalCashback).toFixed(18),
+					},
+				};
+			});
+		}),
+});
