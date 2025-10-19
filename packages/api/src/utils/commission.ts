@@ -13,8 +13,8 @@ export const COMMISSION_RATES = {
 } as const;
 
 // Get upline chain (up to 3 levels) for a user
-export async function getUplineChain(userId: string) {
-	const result = await db.execute<{ id: string; level: number }>(sql`
+export async function getUplineChain(userId: string, dbInstance = db) {
+	const result = await dbInstance.execute<{ id: string; level: number }>(sql`
 		WITH RECURSIVE upline AS (
 			SELECT id, referrer_id, referral_depth, 0 as level
 			FROM "user"
@@ -71,7 +71,8 @@ export function generateId(): string {
 export async function calculateCommissions(
 	userId: string,
 	feeAmount: string | Decimal,
-	tokenType: string
+	tokenType: string,
+	dbInstance = db
 ) {
 	const fee = decimal(feeAmount);
 	const breakdown = calculateCommissionBreakdown(fee);
@@ -82,7 +83,8 @@ export async function calculateCommissions(
 	}
 
 	// Get upline chain
-	const upline = await getUplineChain(userId);
+	const uplineResult = await getUplineChain(userId, dbInstance);
+	const upline = uplineResult || [];
 
 	// Map commissions to upline referrers
 	const commissionsList: Array<{

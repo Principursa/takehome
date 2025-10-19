@@ -12,22 +12,28 @@
   },
   "type": "module",
   "scripts": {
-    "build": "tsdown"
+    "build": "tsdown",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:unit": "bun test src/test/unit",
+    "test:integration": "bun test src/test/integration"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.3.11",
     "tsdown": "catalog:"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "@trpc/server": "catalog:",
-    "@trpc/client": "catalog:",
-    "hono": "catalog:",
-    "drizzle-orm": "catalog:",
-    "dotenv": "catalog:",
-    "zod": "catalog:",
     "@takehome/auth": "workspace:*",
-    "@takehome/db": "workspace:*"
+    "@takehome/db": "workspace:*",
+    "@trpc/client": "catalog:",
+    "@trpc/server": "catalog:",
+    "dotenv": "catalog:",
+    "drizzle-orm": "catalog:",
+    "hono": "catalog:",
+    "pg": "^8.16.3",
+    "zod": "catalog:"
   }
 }

@@ -1,4 +1,5 @@
 import { pgTable, text, timestamp, numeric, integer, boolean, index, sql } from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
 import { user } from "./auth";
 
 // Trades table - represents trading activity that generates fees
@@ -92,3 +93,15 @@ export const processedTrades = pgTable("processed_trades", {
 	tradeId: text("trade_id").primaryKey(),
 	processedAt: timestamp("processed_at").defaultNow().notNull(),
 });
+
+// Relations
+export const commissionsRelations = relations(commissions, ({ one }) => ({
+	user: one(user, {
+		fields: [commissions.userId],
+		references: [user.id],
+	}),
+	trade: one(trades, {
+		fields: [commissions.tradeId],
+		references: [trades.id],
+	}),
+}));
