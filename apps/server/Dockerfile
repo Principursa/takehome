@@ -20,7 +20,7 @@ COPY apps/server/package.json /temp/prod/apps/server/
 COPY packages/api/package.json /temp/prod/packages/api/
 COPY packages/auth/package.json /temp/prod/packages/auth/
 COPY packages/db/package.json /temp/prod/packages/db/
-RUN cd /temp/prod && bun install --production
+RUN cd /temp/prod && bun install
 
 # Copy node_modules from temp directory
 # Then copy all (non-ignored) project files into the image
