@@ -10,7 +10,7 @@ COPY apps/web/package.json /temp/dev/apps/web/
 COPY packages/api/package.json /temp/dev/packages/api/
 COPY packages/auth/package.json /temp/dev/packages/auth/
 COPY packages/db/package.json /temp/dev/packages/db/
-RUN cd /temp/dev && bun install --frozen-lockfile
+RUN cd /temp/dev && bun install
 
 # Copy source and build
 FROM base AS build

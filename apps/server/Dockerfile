@@ -11,7 +11,7 @@ COPY apps/server/package.json /temp/dev/apps/server/
 COPY packages/api/package.json /temp/dev/packages/api/
 COPY packages/auth/package.json /temp/dev/packages/auth/
 COPY packages/db/package.json /temp/dev/packages/db/
-RUN cd /temp/dev && bun install --frozen-lockfile
+RUN cd /temp/dev && bun install
 
 # Install with --production (exclude devDependencies)
 RUN mkdir -p /temp/prod
@@ -20,7 +20,7 @@ COPY apps/server/package.json /temp/prod/apps/server/
 COPY packages/api/package.json /temp/prod/packages/api/
 COPY packages/auth/package.json /temp/prod/packages/auth/
 COPY packages/db/package.json /temp/prod/packages/db/
-RUN cd /temp/prod && bun install --frozen-lockfile --production
+RUN cd /temp/prod && bun install --production
 
 # Copy node_modules from temp directory
 # Then copy all (non-ignored) project files into the image
