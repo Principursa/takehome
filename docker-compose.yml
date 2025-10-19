@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: takehome-postgres
+    environment:
+      POSTGRES_DB: takehome
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - takehome-network
+
+  # Backend Server
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    container_name: takehome-server
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/takehome
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: https://api.varsityshark.dev
+      CORS_ORIGIN: https://varsityshark.dev
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - takehome-network
+    labels:
+      caddy: api.varsityshark.dev
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+
+  # Frontend Web App
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: takehome-web
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - server
+    restart: unless-stopped
+    networks:
+      - takehome-network
+    labels:
+      caddy: varsityshark.dev
+      caddy.reverse_proxy: "{{upstreams 3001}}"
+
+  # Caddy Reverse Proxy
+  caddy:
+    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+    container_name: takehome-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      CADDY_INGRESS_NETWORKS: takehome-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks:
+      - takehome-network
+
+networks:
+  takehome-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

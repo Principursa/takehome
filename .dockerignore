@@ -1,0 +1,61 @@
+# Dependencies
+node_modules
+**/node_modules
+.pnp
+.pnp.js
+
+# Testing
+coverage
+*.test.ts
+*.test.js
+**/__tests__
+**/test
+apps/server/src/test
+
+# Build outputs
+dist
+build
+.turbo
+.next
+out
+
+# Development
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+README.md
+CLAUDE.md
+IMPLEMENTATION_SUMMARY.md
+REFERRAL_SYSTEM_BEST_PRACTICES.md
+specs
+
+# Misc
+*.md
+.eslintrc.js
+.prettierrc
+tsconfig.json
