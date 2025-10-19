@@ -31,7 +31,7 @@ function EarningsRoute() {
     data: earningsData,
     isLoading: earningsLoading,
     error: earningsError,
-  } = useQuery(trpc.referral.getEarnings.queryOptions({ tokenType: "USDC-ARBITRUM" }));
+  } = useQuery(trpc.referral.earnings.queryOptions({ tokenType: "USDC-ARBITRUM" }));
 
   // Fetch earnings history
   const {
@@ -39,7 +39,7 @@ function EarningsRoute() {
     isLoading: historyLoading,
     error: historyError,
   } = useQuery(
-    trpc.referral.getEarningsHistory.queryOptions({
+    trpc.referral.earningsHistory.queryOptions({
       tokenType: "USDC-ARBITRUM",
       limit: 50,
     }),
@@ -54,7 +54,7 @@ function EarningsRoute() {
 
   // Claim mutation
   const claimMutation = useMutation(
-    trpc.referral.claimAll.mutationOptions({
+    trpc.referral.claim.mutationOptions({
       onSuccess: () => {
         refetchClaimable();
       },
@@ -111,19 +111,33 @@ function EarningsRoute() {
       </div>
 
       {/* Earnings Summary */}
-      {earningsData?.summary && (
+      {earningsData && (
         <EarningsPanel
           earnings={{
-            totalCommissions: earningsData.summary.totalCommissions || "0",
-            totalCashback: earningsData.summary.totalCashback || "0",
-            unclaimedCommissions: earningsData.summary.unclaimedCommissions || "0",
-            unclaimedCashback: earningsData.summary.unclaimedCashback || "0",
-            byLevel: (earningsData.byLevel || []).map((l) => ({
-              level: l.level,
-              amount: l.total || "0",
-              claimed: l.claimed || "0",
-              unclaimed: l.unclaimed || "0",
-            })),
+            totalCommissions: earningsData.commissions?.total || "0",
+            totalCashback: earningsData.cashback?.total || "0",
+            unclaimedCommissions: earningsData.commissions?.unclaimed || "0",
+            unclaimedCashback: earningsData.cashback?.unclaimed || "0",
+            byLevel: [
+              {
+                level: 1,
+                amount: earningsData.commissions?.byLevel?.level1?.total || "0",
+                claimed: earningsData.commissions?.byLevel?.level1?.claimed || "0",
+                unclaimed: earningsData.commissions?.byLevel?.level1?.unclaimed || "0",
+              },
+              {
+                level: 2,
+                amount: earningsData.commissions?.byLevel?.level2?.total || "0",
+                claimed: earningsData.commissions?.byLevel?.level2?.claimed || "0",
+                unclaimed: earningsData.commissions?.byLevel?.level2?.unclaimed || "0",
+              },
+              {
+                level: 3,
+                amount: earningsData.commissions?.byLevel?.level3?.total || "0",
+                claimed: earningsData.commissions?.byLevel?.level3?.claimed || "0",
+                unclaimed: earningsData.commissions?.byLevel?.level3?.unclaimed || "0",
+              },
+            ].filter((level) => parseFloat(level.amount) > 0),
           }}
           tokenType="USDC-ARBITRUM"
         />
