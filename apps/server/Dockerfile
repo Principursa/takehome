@@ -6,7 +6,7 @@ WORKDIR /app
 # This will cache them and speed up future builds
 FROM base AS install
 RUN mkdir -p /temp/dev
-COPY package.json bun.lockb /temp/dev/
+COPY package.json bun.lock /temp/dev/
 COPY apps/server/package.json /temp/dev/apps/server/
 COPY packages/api/package.json /temp/dev/packages/api/
 COPY packages/auth/package.json /temp/dev/packages/auth/
@@ -15,7 +15,7 @@ RUN cd /temp/dev && bun install --frozen-lockfile
 
 # Install with --production (exclude devDependencies)
 RUN mkdir -p /temp/prod
-COPY package.json bun.lockb /temp/prod/
+COPY package.json bun.lock /temp/prod/
 COPY apps/server/package.json /temp/prod/apps/server/
 COPY packages/api/package.json /temp/prod/packages/api/
 COPY packages/auth/package.json /temp/prod/packages/auth/
@@ -38,7 +38,7 @@ COPY --from=install /temp/prod/node_modules node_modules
 COPY --from=prerelease /app/apps/server ./apps/server
 COPY --from=prerelease /app/packages ./packages
 COPY --from=prerelease /app/package.json .
-COPY --from=prerelease /app/bun.lockb .
+COPY --from=prerelease /app/bun.lock .
 
 # Run the app
 USER bun

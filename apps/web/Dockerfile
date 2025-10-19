@@ -5,7 +5,7 @@ WORKDIR /app
 # Install dependencies
 FROM base AS install
 RUN mkdir -p /temp/dev
-COPY package.json bun.lockb /temp/dev/
+COPY package.json bun.lock /temp/dev/
 COPY apps/web/package.json /temp/dev/apps/web/
 COPY packages/api/package.json /temp/dev/packages/api/
 COPY packages/auth/package.json /temp/dev/packages/auth/
