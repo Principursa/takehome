@@ -291,132 +291,104 @@ export const referralRouter = router({
 		}),
 
 	// User Story 2: Commission earning
+	// Note: Trade recording moved to /api/webhook/trade (see webhook router)
 
-	// T034: Record a trade and trigger commission distribution
-	recordTrade: protectedProcedure
+	// GET /api/referral/trades - Get trades with commission breakdown
+	trades: protectedProcedure
 		.input(
 			z.object({
-				volume: z.string().regex(/^\d+(\.\d+)?$/),
-				tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]),
+				limit: z.number().min(1).max(100).default(50),
+				offset: z.number().min(0).default(0),
 			})
 		)
-		.mutation(async ({ ctx, input }) => {
-			const { withSerializableTransaction } = await import("../utils/transaction");
-			const { decimal, toDecimalString } = await import("../utils/decimal");
-			const { calculateCommissions } = await import("../utils/commission");
-			const { trades, commissions, cashback, treasuryAllocation, xpBalance, processedTrades } = await import("@takehome/db");
-
+		.query(async ({ ctx, input }) => {
+			const { trades, commissions, cashback, treasuryAllocation } = await import("@takehome/db");
 			const userId = ctx.session.user.id;
 
-			return await withSerializableTransaction(async (tx) => {
-				// Get user's fee tier
-				const userData = await tx.query.user.findFirst({
-					where: eq(user.id, userId),
-					columns: {
-						feeTier: true,
-					},
-				});
-
-				if (!userData) {
-					throw new TRPCError({
-						code: "NOT_FOUND",
-						message: "User not found",
-					});
-				}
-
-				const volume = decimal(input.volume);
-				const feeTier = decimal(userData.feeTier);
-				const feeAmount = volume.times(feeTier);
-
-				// Create trade record
-				const tradeId = crypto.randomUUID();
-				await tx.insert(trades).values({
-					id: tradeId,
-					userId,
-					volume: toDecimalString(volume),
-					feeAmount: toDecimalString(feeAmount),
-					feeTier: userData.feeTier,
-					tokenType: input.tokenType,
-					processedForCommissions: false,
-					createdAt: new Date(),
-				});
-
-				// Calculate commission breakdown
-				const breakdown = await calculateCommissions(userId, feeAmount, input.tokenType);
-
-				// Insert commissions for upline
-				if (breakdown.commissions.length > 0) {
-					await tx.insert(commissions).values(
-						breakdown.commissions.map((c) => ({
-							id: c.id,
-							userId: c.userId,
-							tradeId,
-							amount: c.amount,
-							level: c.level,
-							tokenType: input.tokenType,
-							claimed: false,
-							createdAt: new Date(),
-						}))
-					);
-				}
-
-				// Insert cashback for trader
-				if (breakdown.cashback) {
-					await tx.insert(cashback).values({
-						id: breakdown.cashback.id,
-						userId,
-						tradeId,
-						amount: breakdown.cashback.amount,
-						tokenType: input.tokenType,
-						claimed: false,
-						createdAt: new Date(),
-					});
-				}
-
-				// Insert treasury allocation
-				if (breakdown.treasury) {
-					await tx.insert(treasuryAllocation).values({
-						id: breakdown.treasury.id,
-						tradeId,
-						amount: breakdown.treasury.amount,
-						tokenType: input.tokenType,
-						allocatedAt: new Date(),
-					});
-				}
-
-				// Mark trade as processed
-				await tx
-					.update(trades)
-					.set({ processedForCommissions: true })
-					.where(eq(trades.id, tradeId));
-
-				// Create processed trade record for idempotency
-				await tx.insert(processedTrades).values({
-					tradeId,
-					processedAt: new Date(),
-				});
-
-				return {
-					tradeId,
-					feeAmount: toDecimalString(feeAmount),
-					breakdown: {
-						commissions: breakdown.commissions.map((c) => ({
-							userId: c.userId,
-							level: c.level,
-							amount: c.amount,
-						})),
-						cashback: breakdown.cashback?.amount,
-						treasury: breakdown.treasury?.amount,
-						total: breakdown.total,
-					},
-				};
+			// Get user's trades
+			const userTrades = await db.query.trades.findMany({
+				where: eq(trades.userId, userId),
+				limit: input.limit,
+				offset: input.offset,
+				orderBy: (trades, { desc }) => [desc(trades.createdAt)],
 			});
+
+			// For each trade, get commissions, cashback, and treasury
+			const tradesWithDetails = await Promise.all(
+				userTrades.map(async (trade) => {
+					// Get commissions for this trade with user info
+					const tradeCommissions = await db.query.commissions.findMany({
+						where: eq(commissions.tradeId, trade.id),
+						with: {
+							user: {
+								columns: {
+									id: true,
+									name: true,
+									email: true,
+								},
+							},
+						},
+					});
+
+					// Get cashback for this trade
+					const tradeCashback = await db.query.cashback.findFirst({
+						where: eq(cashback.tradeId, trade.id),
+					});
+
+					// Get treasury allocation for this trade
+					const tradeTreasury = await db.query.treasuryAllocation.findFirst({
+						where: eq(treasuryAllocation.tradeId, trade.id),
+					});
+
+					return {
+						id: trade.id,
+						volume: trade.volume,
+						feeAmount: trade.feeAmount,
+						feeTier: trade.feeTier,
+						tokenType: trade.tokenType,
+						createdAt: trade.createdAt,
+						processedForCommissions: trade.processedForCommissions,
+						commissions: tradeCommissions.map((c) => ({
+							id: c.id,
+							amount: c.amount,
+							level: c.level,
+							userId: c.userId,
+							claimed: c.claimed,
+							claimedAt: c.claimedAt,
+							user: c.user
+								? {
+										name: c.user.name,
+										email: c.user.email,
+								  }
+								: undefined,
+						})),
+						cashback: tradeCashback
+							? {
+									id: tradeCashback.id,
+									amount: tradeCashback.amount,
+									claimed: tradeCashback.claimed,
+									claimedAt: tradeCashback.claimedAt,
+							  }
+							: null,
+						treasury: tradeTreasury
+							? {
+									amount: tradeTreasury.amount,
+							  }
+							: { amount: "0" },
+					};
+				})
+			);
+
+			return {
+				trades: tradesWithDetails,
+				hasMore: userTrades.length === input.limit,
+			};
 		}),
 
 	// User Story 3: Network viewing
 
-	// Get user's referral network (direct referrals and stats)
-	getNetwork: protectedProcedure.query(async ({ ctx }) => {
+	// GET /api/referral/network - Get user's referral network (direct referrals and stats)
+	network: protectedProcedure.query(async ({ ctx }) => {
 		const userId = ctx.session.user.id;
 
 		// Get direct referrals
@@ -513,8 +485,8 @@ export const referralRouter = router({
 
 	// User Story 4: Earnings dashboard
 
-	// Get earnings summary for authenticated user
-	getEarnings: protectedProcedure
+	// GET /api/referral/earnings - Get earnings summary for authenticated user
+	earnings: protectedProcedure
 		.input(
 			z
 				.object({
@@ -572,9 +544,9 @@ export const referralRouter = router({
 					claimed: "0",
 					unclaimed: "0",
 					byLevel: {
-						level1: "0",
-						level2: "0",
-						level3: "0",
+						level1: { total: "0", claimed: "0", unclaimed: "0" },
+						level2: { total: "0", claimed: "0", unclaimed: "0" },
+						level3: { total: "0", claimed: "0", unclaimed: "0" },
 					},
 					byToken: {} as Record<string, { total: string; claimed: string; unclaimed: string }>,
 				},
@@ -599,10 +571,13 @@ export const referralRouter = router({
 
 				// By level
 				const levelKey = `level${c.level}` as keyof typeof earnings.commissions.byLevel;
-				earnings.commissions.byLevel[levelKey] = sum(
-					decimal(earnings.commissions.byLevel[levelKey]),
-					amount
-				).toFixed(18);
+				const levelStats = earnings.commissions.byLevel[levelKey];
+				levelStats.total = sum(decimal(levelStats.total), amount).toFixed(18);
+				if (c.claimed) {
+					levelStats.claimed = sum(decimal(levelStats.claimed), amount).toFixed(18);
+				} else {
+					levelStats.unclaimed = sum(decimal(levelStats.unclaimed), amount).toFixed(18);
+				}
 
 				// By token
 				if (!earnings.commissions.byToken[c.tokenType]) {
@@ -652,8 +627,8 @@ export const referralRouter = router({
 			return earnings;
 		}),
 
-	// Get earnings history with pagination
-	getEarningsHistory: protectedProcedure
+	// GET /api/referral/earnings/history - Get earnings history with pagination
+	earningsHistory: protectedProcedure
 		.input(
 			z.object({
 				limit: z.number().min(1).max(100).default(50),
@@ -746,7 +721,7 @@ export const referralRouter = router({
 
 	// User Story 5: Claiming interface
 
-	// Get claimable earnings (unclaimed commissions and cashback)
+	// GET /api/referral/claimable - Get claimable earnings (unclaimed commissions and cashback)
 	getClaimable: protectedProcedure
 		.input(
 			z
@@ -835,7 +810,7 @@ export const referralRouter = router({
 			};
 		}),
 
-	// Claim commissions
+	// POST /api/referral/claim - Claim commissions (individual IDs)
 	claimCommissions: protectedProcedure
 		.input(
 			z.object({
@@ -958,8 +933,8 @@ export const referralRouter = router({
 			});
 		}),
 
-	// Claim all unclaimed earnings for a specific token type
-	claimAll: protectedProcedure
+	// POST /api/referral/claim - Claim all unclaimed earnings for a specific token type
+	claim: protectedProcedure
 		.input(
 			z.object({
 				tokenType: z.enum(["USDC-ARBITRUM", "USDC-SOLANA"]),

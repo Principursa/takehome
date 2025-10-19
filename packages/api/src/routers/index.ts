@@ -1,6 +1,7 @@
 import { protectedProcedure, publicProcedure, router } from "../index";
 import { todoRouter } from "./todo";
 import { referralRouter } from "./referral";
+import { webhookRouter } from "./webhook";
 
 export const appRouter = router({
 	healthCheck: publicProcedure.query(() => {
@@ -14,5 +15,6 @@ export const appRouter = router({
 	}),
 	todo: todoRouter,
 	referral: referralRouter,
+	webhook: webhookRouter,
 });
 export type AppRouter = typeof appRouter;
