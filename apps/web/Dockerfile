@@ -4,17 +4,16 @@ WORKDIR /app
 
 # Install dependencies
 FROM base AS install
-RUN mkdir -p /temp/dev
-COPY package.json bun.lock /temp/dev/
-COPY apps/web/package.json /temp/dev/apps/web/
-COPY packages/api/package.json /temp/dev/packages/api/
-COPY packages/auth/package.json /temp/dev/packages/auth/
-COPY packages/db/package.json /temp/dev/packages/db/
-RUN cd /temp/dev && bun install
+COPY package.json bun.lock ./
+COPY apps/web/package.json ./apps/web/
+COPY packages/api/package.json ./packages/api/
+COPY packages/auth/package.json ./packages/auth/
+COPY packages/db/package.json ./packages/db/
+RUN bun install
 
 # Copy source and build
 FROM base AS build
-COPY --from=install /temp/dev/node_modules node_modules
+COPY --from=install /app/node_modules node_modules
 COPY . .
 
 # Build the web app
