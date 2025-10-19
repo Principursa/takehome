@@ -78,6 +78,7 @@ services:
 
 networks:
   takehome-network:
+    name: takehome-network
     driver: bridge
 
 volumes:
