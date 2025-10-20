@@ -18,6 +18,9 @@ This project was created with [Better-T-Stack](https://github.com/AmanVarshney01
 - **PGLite** - In memory postgres instance for easily running integration tests
 - **Caddy Docker Proxy** - Docker based reverse proxying. No Caddy or Nginx files laying around the repo
 - **Github Actions** - For CI/CD, deployments to vps and automatically running tests
+- **Cloudflare** - DNS and Proxying
+- **NixOS** - Hetzner Based Linux NixOS instance for easy server and user init
+- **Docker** - Orchestration of separate services
 
 ## Getting Started
 
