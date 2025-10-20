@@ -43,7 +43,7 @@ jobs:
             bun run build
             docker compose down || true
             docker compose build
-            docker compose up -d
+            docker compose up --build -d
             echo "✅ Deployment complete"
             exit
           EOF
