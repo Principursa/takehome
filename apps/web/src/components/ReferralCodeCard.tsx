@@ -21,7 +21,7 @@ export function ReferralCodeCard({
   totalReferrals,
   className,
 }: ReferralCodeCardProps) {
-  const shareUrl = `${window.location.origin}/register?ref=${referralCode}`;
+  const shareUrl = `${window.location.origin}/login?ref=${referralCode}`;
 
   const handleCopy = async () => {
     try {
