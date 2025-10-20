@@ -96,3 +96,11 @@ takehome/
 - POST /api/referral/claimCashback - claims cashback
 - POST /api/referral/claim - Claim all unclaimed earnings of a particular token type
 - POST /api/webhook/trade - Simulates trading activity and comission distribution
+
+## How to use the frontend 
+1. Sign in, use referral code if avaliable,it is possible to make multiple accounts to test commission feature
+2. Go to Dashboard or /referral
+3. From here you can access referral/network, referral/earnings, referral/trades and referral/test frontend routes by clicking tabs on top portion of dashboard
+4. Select Trade parameters and press Create Trade button to simulate trading with commission fee splits
+5. Claim earnings/commissions on earnings
+
