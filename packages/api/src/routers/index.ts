@@ -1,5 +1,4 @@
 import { protectedProcedure, publicProcedure, router } from "../index";
-import { todoRouter } from "./todo";
 import { referralRouter } from "./referral";
 import { webhookRouter } from "./webhook";
 
@@ -13,7 +12,6 @@ export const appRouter = router({
 			user: ctx.session.user,
 		};
 	}),
-	todo: todoRouter,
 	referral: referralRouter,
 	webhook: webhookRouter,
 });
