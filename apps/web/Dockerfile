@@ -31,5 +31,5 @@ RUN bun install -g serve
 # Expose port
 EXPOSE 3001
 
-# Serve the static files
-CMD ["bunx", "serve", "dist", "-l", "3001"]
+# Serve the static files (with SPA support for client-side routing)
+CMD ["bunx", "serve", "-s", "dist", "-l", "3001"]
